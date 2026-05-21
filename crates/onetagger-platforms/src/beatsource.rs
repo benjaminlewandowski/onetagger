@@ -26,14 +26,22 @@ impl Beatsource {
         }
     }
 
+    /// Strip ALL parentheses to prevent Beatsource API 403/400 decoding errors
+    pub fn clear_search_query(query: &str) -> String {
+        query.replace("(", "").replace(")", "")
+    }
+
     /// Search for tracks
     pub fn search(&self, query: &str) -> Result<BeatsourceSearchResponse, Error> {
+        // Run the query through the cleaner before sending it to the API
+        let safe_query = Self::clear_search_query(query);
+
         let res: BeatsourceSearchResponse = self.client.get("https://api.beatsource.com/v4/catalog/search")
             .query(&[
                 ("per_page", "100"), // Fixed typo from pubper_page
                 ("page", "1"),
                 ("type", "tracks"),
-                ("q", query)
+                ("q", safe_query.as_str()) // Use the cleaned query here
             ])
             .bearer_auth(self.token_manager.token()?)
             .send()?
