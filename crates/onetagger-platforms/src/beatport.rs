@@ -3,7 +3,7 @@ use anyhow::{anyhow, Error};
 use std::time::Duration;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Datelike};
 use serde::{Serialize, Deserialize};
 use onetagger_tag::FrameName;
 use onetagger_tagger::{
@@ -38,6 +38,7 @@ impl Beatport {
     /// Search for tracks on Beatport using the catalog API
     pub fn search(&self, query: &str, page: i32, results_per_page: usize) -> Result<BeatportTrackResults, Error> {
         let query = Self::clear_search_query(query);
+
         let token = self.update_token()?;
 
         let response: BeatportTrackResults = self.client
@@ -129,26 +130,9 @@ impl Beatport {
         Ok(response.results)
     }
 
-    /// Beatport returns 403 if you have more than a single () pair
+    /// Strip ALL parentheses to prevent Beatport API 403/400 decoding errors
     pub fn clear_search_query(query: &str) -> String {
-        let mut open = 0;
-        let mut closed = 0;
-
-        query.chars().filter(|c| {
-            match c {
-                '(' if open > 0 => false,
-                '(' => {
-                    open += 1;
-                    true
-                },
-                ')' if closed > 0 => false,
-                ')' => {
-                    closed += 1;
-                    true
-                },
-                _ => true
-            }
-        }).collect()
+        query.replace("(", "").replace(")", "")
     }
 }
 
@@ -196,7 +180,7 @@ pub struct BeatportGeneric {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeatportImage {
-    pub id: i64,
+    pub id: Option<i64>,
     pub dynamic_uri: String,
 }
 
@@ -247,8 +231,8 @@ impl BeatportTrack {
             remixers: self.remixers.into_iter().map(|r| r.name).collect(),
             track_number: self.number.map(|n| TrackNumber::Number(n as i32)),
             isrc: self.isrc,
-            release_year: self.new_release_date.as_ref().and_then(|d| d.chars().take(4).collect::<String>().parse().ok()),
-            publish_year: self.publish_date.as_ref().and_then(|d| d.chars().take(4).collect::<String>().parse().ok()),
+            release_year: self.new_release_date.as_ref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()).map(|d| d.year() as i16),
+            publish_year: self.publish_date.as_ref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()).map(|d| d.year() as i16),
             release_date: self.new_release_date.as_ref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
             publish_date: self.publish_date.as_ref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
             thumbnail,
