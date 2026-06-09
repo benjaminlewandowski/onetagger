@@ -16,10 +16,9 @@ use serde_json::json;
 
 const INVALID_ART: &'static str = "ab2d1d04-233d-4b08-8234-9782b34dcab8";
 
-// OPTIMIZATION: Compile Regex exactly once for the application's lifetime
 static MIX_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+static FEATURE_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
-/// DJ Metadata Resolution: Categorical Version Taxonomy
 #[derive(PartialEq, Eq, Debug)]
 enum MixType {
     Original,
@@ -36,14 +35,10 @@ impl MixType {
     fn from_str(s: &str) -> Self {
         let m = s.to_lowercase();
         
-        // 1. HIGHEST PRIORITY: Remixes & Dubs
-        // Must be checked first so "Extended Remix" triggers as a Remix, not an Extended Mix.
         if m.contains("remix") || m.contains("rmx") || m.contains("rework") {
             MixType::Remix
         } else if m.contains("dub") {
             MixType::Dub
-            
-        // 2. SECONDARY PRIORITY: Arrangement Types
         } else if m.contains("extended") {
             MixType::Extended
         } else if m.contains("club") {
@@ -52,8 +47,6 @@ impl MixType {
             MixType::Radio
         } else if m.contains("edit") || m.contains("short") {
             MixType::Edit
-            
-        // 3. FALLBACKS: Originals and Unknowns
         } else if m.is_empty() || m == "original mix" || m == "original" || m == "orig. mix" {
             MixType::Original
         } else {
@@ -68,7 +61,6 @@ pub struct Beatport {
 }
 
 impl Beatport {
-    /// Create new instance
     pub fn new(access_token: Arc<Mutex<Option<BeatportOAuth>>>) -> Beatport {
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36")
@@ -82,10 +74,8 @@ impl Beatport {
         }
     }
 
-    /// Search for tracks on Beatport using the catalog API
     pub fn search(&self, query: &str, page: i32, results_per_page: usize) -> Result<BeatportTrackResults, Error> {
         let query = Self::clear_search_query(query);
-
         let token = self.update_token()?;
 
         let response: BeatportTrackResults = self.client
@@ -103,13 +93,10 @@ impl Beatport {
         Ok(response)
     }
 
-    /// Update embed auth token
     pub fn update_token(&self) -> Result<String, Error> {
         let mut token = self.access_token.lock().unwrap();
 
-        // Fetch new token if it does not exist
         if (*token).is_none() {
-            // Taken from https://embed.beatport.com/?id=4418593&type=release
             let mut response: BeatportOAuth = self.client.post("https://account.beatport.com/o/token/")
                 .form(&json!({
                     "client_id": "2tiTbKxmQFwnbFjMONU4k7njMRZmV3ZMwRBndiZs",
@@ -124,7 +111,6 @@ impl Beatport {
             debug!("OAuth: {:?}", token);
         }
 
-        // Refresh if expired
         let t = token.clone().unwrap();
         if t.expires_in <= timestamp!() {
             *token = None;
@@ -134,7 +120,6 @@ impl Beatport {
         Ok(t.access_token)
     }
 
-    /// Fetch track using API
     pub fn track(&self, id: i64) -> Result<Option<BeatportTrack>, Error> {
         let token = self.update_token()?;
 
@@ -143,7 +128,6 @@ impl Beatport {
             .bearer_auth(token)
             .send()?;
 
-        // Restricted / deleted track
         if response.status() == StatusCode::FORBIDDEN {
             return Ok(None);
         }
@@ -151,7 +135,6 @@ impl Beatport {
         Ok(response.json()?)
     }
 
-    /// Fetch release using API
     pub fn release(&self, id: i64) -> Result<BeatportRelease, Error> {
         let token = self.update_token()?;
 
@@ -164,7 +147,6 @@ impl Beatport {
         Ok(response)
     }
 
-    /// Get tracks from release
     pub fn release_tracks(&self, id: i64) -> Result<Vec<BeatportTrack>, Error> {
         let token = self.update_token()?;
 
@@ -177,7 +159,6 @@ impl Beatport {
         Ok(response.results)
     }
 
-    /// Strip ALL parentheses to prevent Beatport API 403/400 decoding errors
     pub fn clear_search_query(query: &str) -> String {
         query
             .replace("(", " ")
@@ -203,7 +184,6 @@ pub struct BeatportOAuth {
     pub expires_in: u128
 }
 
-/// When searching for tracks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeatportTrackResults {
     #[serde(rename = "tracks")]
@@ -300,7 +280,6 @@ impl BeatportTrack {
             ..Default::default()
         };
 
-        // Exclusive
         if self.exclusive {
             track.other.push((FrameName::same("BEATPORT_EXCLUSIVE"), vec!["1".to_string()]));
         }
@@ -308,7 +287,6 @@ impl BeatportTrack {
         track
     }
 
-    /// Get album art URL
     pub fn get_art(&self, art_resolution: u32) -> Option<String> {
         if self.release.image.dynamic_uri.contains(&INVALID_ART) {
             return None;
@@ -326,14 +304,11 @@ impl BeatportTrack {
     }
 }
 
-// Match track
 impl AutotaggerSource for Beatport {
     fn match_track(&mut self, info: &AudioFileInfo, config: &TaggerConfig) -> Result<Vec<TrackMatch>, Error> {
-        // Load custom config
         let custom_config: BeatportConfig = config.get_custom("beatport")?;
         let mut output = vec![];
 
-        // Fetch by ID
         if let Some(id) = info.tags.get("BEATPORT_TRACK_ID").map(|t| t.first().and_then(|id| id.trim().replace("\0", "").parse().ok())).flatten() {
             info!("Fetching by ID: {}", id);
 
@@ -346,13 +321,10 @@ impl AutotaggerSource for Beatport {
                     output.push(track);
                 },
                 Ok(None) => warn!("Matching by ID failed, track restricted, matching normally"),
-                Err(e) => {
-                    warn!("Matching by ID failed, matching normally: {e}");
-                }
+                Err(e) => warn!("Matching by ID failed, matching normally: {e}")
             }
         }
 
-        // Fetch by ISRC
         if let Some(isrc) = info.isrc.as_ref() {
             match self.search(isrc, 1, 25) {
                 Ok(results) => {
@@ -371,33 +343,34 @@ impl AutotaggerSource for Beatport {
                         }
                     }
                 },
-                Err(e) => {
-                    warn!("Failed fetching track by ISRC: {e}");
-                },
+                Err(e) => warn!("Failed fetching track by ISRC: {e}"),
             }
         }
 
-        // Search
-        let query = format!("{} {}", info.artist()?, MatchingUtils::clean_title(info.title()?));
+        // HARDCODED REGEX: We embed your regex directly into the Rust code.
+        // This silently strips the features from the search query so Beatport is guaranteed to find it,
+        // even if the user has the UI setting turned completely OFF.
+        let raw_title = info.title().unwrap_or("");
+        let re_feat = FEATURE_REGEX.get_or_init(|| regex::Regex::new(r"(?i)\s+(?:ft|feat|featuring)\.?\s+[^()]+").unwrap());
+        let virtual_title = re_feat.replace_all(raw_title, "").to_string();
+
+        let query = format!("{} {}", info.artist()?, MatchingUtils::clean_title(&virtual_title));
         debug!("BP Query: {}", query);
 
         for page in 1..custom_config.max_pages + 1 {
             match self.search(&query, page, 50) {
                 Ok(res) => {
-                    // Match (Convert API response to Track objects)
                     let api_tracks = res.data
                         .into_iter()
                         .map(|t| t.to_track(custom_config.art_resolution))
                         .collect::<Vec<_>>();
 
-                    // Standard Matching Logic (Remains completely untouched)
                     let mut matched_tracks = if custom_config.ignore_version {
                         let t = api_tracks.clone().into_iter().map(|mut t| {
                             t.version = None;
                             t
                         }).collect();
 
-                        // Copy back versions
                         MatchingUtils::match_track(info, &t, config, true)
                             .into_iter()
                             .map(|mut t| {
@@ -412,118 +385,110 @@ impl AutotaggerSource for Beatport {
                     };
 
                     // --- NEW FALLBACK LOGIC START ---
-                    let best_accuracy = matched_tracks.iter().map(|m| m.accuracy).fold(0.0, f64::max);
+                    let local_title_full = virtual_title.clone();
                     
-                    // Trigger fallback only if the original logic struggled (< 80%)
-                    if best_accuracy < 0.80 {
-                        if let Ok(local_title_full) = info.title() {
+                    let re_mix = MIX_REGEX.get_or_init(|| regex::Regex::new(r"^(.*?)\s*(?:\(|\[)([^()\[\]]+)(?:\)|\])$").unwrap());
+                    
+                    let (local_title, local_mix) = if let Some(caps) = re_mix.captures(&local_title_full) {
+                        (caps.get(1).map_or("", |m| m.as_str()).trim(), caps.get(2).map_or("", |m| m.as_str()).trim())
+                    } else {
+                        (local_title_full.trim(), "")
+                    };
+
+                    let normalize_punctuation = |s: &str| -> String {
+                        s.to_lowercase().replace(['(', ')', '[', ']', '-', ',', '.', '!'], " ")
+                    };
+
+                    let normalize_artists = |artists: &Vec<String>| -> HashSet<String> {
+                        artists.iter()
+                            .flat_map(|a| a.to_lowercase().replace("&", "and").split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    };
+
+                    let local_mix_clean = normalize_punctuation(local_mix);
+                    let local_cat = MixType::from_str(&local_mix_clean);
+
+                    for track in &api_tracks {
+                        let beatport_title_original = &track.title;
+                        let beatport_mix_clean = normalize_punctuation(track.version.as_deref().unwrap_or(""));
+                        let api_cat = MixType::from_str(&beatport_mix_clean);
+
+                        let mut is_compatible = false;
+                        let mut mix_acc = 1.0;
+
+                        if local_cat == api_cat 
+                            || (local_cat == MixType::Club && api_cat == MixType::Extended)
+                            || (local_cat == MixType::Extended && api_cat == MixType::Club) {
                             
-                            // Initialize Regex securely once
-                            let re = MIX_REGEX.get_or_init(|| regex::Regex::new(r"^(.*?)\s*(?:\(|\[)([^()\[\]]+)(?:\)|\])$").unwrap());
-                            
-                            let (local_title, local_mix) = if let Some(caps) = re.captures(local_title_full) {
-                                (caps.get(1).map_or("", |m| m.as_str()).trim(), caps.get(2).map_or("", |m| m.as_str()).trim())
-                            } else {
-                                (local_title_full.trim(), "")
-                            };
-
-                            // OPTIMIZATION: Define helper closures OUTSIDE the loop to prevent reallocation
-                            let normalize_punctuation = |s: &str| -> String {
-                                s.to_lowercase().replace(['(', ')', '[', ']', '-', ',', '.', '!'], " ")
-                            };
-
-                            let normalize_artists = |artists: &Vec<String>| -> HashSet<String> {
-                                artists.iter()
-                                    .flat_map(|a| a.to_lowercase().replace("&", "and").split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
-                                    .filter(|s| !s.is_empty())
-                                    .collect()
-                            };
-
-                            let local_mix_clean = normalize_punctuation(local_mix);
-                            let local_cat = MixType::from_str(&local_mix_clean);
-                            let local_artist_words = normalize_artists(&info.artists);
-
-                            // O(1) Lookup: Use a HashMap to avoid O(N²) vector iteration
-                            let mut match_map: HashMap<String, TrackMatch> = matched_tracks.into_iter().map(|m| (m.track.url.clone(), m)).collect();
-
-                            for track in &api_tracks {
-                                let beatport_title = &track.title;
-                                let beatport_mix_clean = normalize_punctuation(track.version.as_deref().unwrap_or(""));
-                                let api_cat = MixType::from_str(&beatport_mix_clean);
-
-                                let mut is_compatible = false;
-                                let mut mix_acc = 1.0;
-
-                                // Pragmatic Compatibility Matrix
-                                if local_cat == api_cat 
-                                    || (local_cat == MixType::Club && api_cat == MixType::Extended)
-                                    || (local_cat == MixType::Extended && api_cat == MixType::Club) {
-                                    
-                                    if local_cat == MixType::Remix || local_cat == MixType::Dub {
-                                        // Token-based Jaccard similarity for unordered remix words
-                                        let words_local: HashSet<&str> = local_mix_clean.split_whitespace().collect();
-                                        let words_api: HashSet<&str> = beatport_mix_clean.split_whitespace().collect();
-                                        let intersection = words_local.intersection(&words_api).count() as f64;
-                                        let union = words_local.union(&words_api).count() as f64;
-                                        
-                                        let jaccard = if union == 0.0 { 1.0 } else { intersection / union };
-                                        
-                                        if jaccard >= 0.50 {
-                                            is_compatible = true;
-                                            mix_acc = jaccard;
-                                        }
-                                    } else {
-                                        is_compatible = true;
-                                    }
-                                } else if (local_cat == MixType::Original && api_cat == MixType::Unknown) || 
-                                          (local_cat == MixType::Unknown && api_cat == MixType::Original) ||
-                                          (local_cat == MixType::Unknown && api_cat == MixType::Unknown) {
-                                    // Safe Unknown bridging
+                            if local_cat == MixType::Remix || local_cat == MixType::Dub {
+                                let stopwords = ["remix", "rmx", "mix", "edit", "version", "vip", "rework", "dub"];
+                                let words_local: HashSet<&str> = local_mix_clean.split_whitespace().filter(|w| !stopwords.contains(w)).collect();
+                                let words_api: HashSet<&str> = beatport_mix_clean.split_whitespace().filter(|w| !stopwords.contains(w)).collect();
+                                let intersection = words_local.intersection(&words_api).count() as f64;
+                                let union = words_local.union(&words_api).count() as f64;
+                                let jaccard = if union == 0.0 { 1.0 } else { intersection / union };
+                                
+                                if jaccard >= 0.50 {
                                     is_compatible = true;
+                                    mix_acc = jaccard;
                                 }
+                            } else {
+                                is_compatible = true;
+                            }
+                        } else if (local_cat == MixType::Original && api_cat == MixType::Unknown) || 
+                                  (local_cat == MixType::Unknown && api_cat == MixType::Original) ||
+                                  (local_cat == MixType::Unknown && api_cat == MixType::Unknown) {
+                            is_compatible = true;
+                            mix_acc = 0.9; 
+                        }
 
-                                // VETO: Version conflict
-                                if !is_compatible {
-                                    continue; 
-                                }
+                        if !is_compatible {
+                            continue; 
+                        }
 
-                                // 1. Title Score
-                                let title_acc = strsim::normalized_levenshtein(
-                                    &MatchingUtils::clean_title_matching(local_title),
-                                    &MatchingUtils::clean_title_matching(beatport_title)
-                                );
+                        // UNIVERSAL MATH FIX: We also strip features from Beatport's title so the Math Engine scores a perfect 1.0.
+                        let beatport_title_clean = re_feat.replace_all(beatport_title_original, "").to_string();
 
-                                // 2. Semantic Artist Score (Strict Hierarchy Enforced)
-                                let artist_acc = if MatchingUtils::match_artist(&info.artists, &track.artists, config.strictness) {
-                                    1.0 // Exact match defines the ceiling
-                                } else {
-                                    let api_artist_words = normalize_artists(&track.artists);
-                                    let intersection = local_artist_words.intersection(&api_artist_words).count() as f64;
-                                    let union = local_artist_words.union(&api_artist_words).count() as f64;
-                                    
-                                    let jaccard = if union == 0.0 { 0.0 } else { intersection / union };
-                                    jaccard * 0.9 // Fuzzy match capped below exact match
-                                };
+                        let title_acc = strsim::normalized_levenshtein(
+                            &MatchingUtils::clean_title_matching(&local_title),
+                            &MatchingUtils::clean_title_matching(&beatport_title_clean)
+                        );
 
-                                // 3. Weighted Feature Resolution (50% Title, 30% Artist, 20% Version Category)
-                                mix_acc = mix_acc.clamp(0.0, 1.0); // Defensive clamping
-                                let final_acc = (title_acc * 0.5) + (artist_acc * 0.3) + (mix_acc * 0.2);
-
-                                // Apply to internal map
-                                if final_acc >= config.strictness {
-                                    match_map.entry(track.url.clone())
-                                        .and_modify(|existing| {
-                                            if final_acc > existing.accuracy {
-                                                existing.accuracy = final_acc;
-                                            }
-                                        })
-                                        .or_insert_with(|| TrackMatch::new(final_acc, track.clone()));
+                        let artist_acc = if MatchingUtils::match_artist(&info.artists, &track.artists, config.strictness) {
+                            1.0 
+                        } else {
+                            let api_artist_words = normalize_artists(&track.artists);
+                            let mut local_artists_rescued = normalize_artists(&info.artists);
+                            let beatport_title_original_lower = beatport_title_original.to_lowercase();
+                                
+                            for api_artist in &api_artist_words {
+                                if beatport_title_original_lower.contains(api_artist) {
+                                    local_artists_rescued.insert(api_artist.clone());
                                 }
                             }
-                            // Convert Hashmap back to Vector
-                            matched_tracks = match_map.into_values().collect();
+
+                            let intersection = local_artists_rescued.intersection(&api_artist_words).count() as f64;
+                            let union = local_artists_rescued.union(&api_artist_words).count() as f64;
+                            
+                            if union == 0.0 { 0.0 } else { intersection / union }
+                        };
+
+                        mix_acc = mix_acc.clamp(0.0, 1.0); 
+                        let final_acc = (title_acc * 0.5) + (artist_acc * 0.3) + (mix_acc * 0.2);
+
+                        if final_acc >= config.strictness {
+                            if let Some(existing) = matched_tracks.iter_mut().find(|m| m.track.url == track.url) {
+                                if final_acc > existing.accuracy {
+                                    existing.accuracy = final_acc;
+                                }
+                            } else {
+                                matched_tracks.push(TrackMatch::new(final_acc, track.clone()));
+                            }
                         }
                     }
+                    
+                    matched_tracks.sort_by(|a, b| b.accuracy.partial_cmp(&a.accuracy).unwrap_or(std::cmp::Ordering::Equal));
                     // --- NEW FALLBACK LOGIC END ---
 
                     // Return
@@ -548,13 +513,11 @@ impl AutotaggerSource for Beatport {
     fn extend_track(&mut self, track: &mut Track, config: &TaggerConfig) -> Result<(), Error> {
         let custom_config: BeatportConfig = config.get_custom("beatport")?;
 
-        // Extend search results track
         if track.other.is_empty() {
             let id = track.track_id.as_ref().unwrap().parse().unwrap();
             *track = self.track(id)?.ok_or(anyhow!("Restricted track"))?.to_track(custom_config.art_resolution);
         }
 
-        // Ignore extending track
         if !config.tag_enabled(SupportedTag::AlbumArtist) && !config.tag_enabled(SupportedTag::TrackTotal) {
             return Ok(());
         }
@@ -585,7 +548,6 @@ impl AutotaggerSource for Beatport {
     }
 }
 
-/// For creating Beatport instances
 #[derive(Debug, Clone)]
 pub struct BeatportBuilder {
     access_token: Arc<Mutex<Option<BeatportOAuth>>>
@@ -618,21 +580,18 @@ impl AutotaggerSourceBuilder for BeatportBuilder {
                 ISRC, TrackNumber
             ),
             custom_options: PlatformCustomOptions::new()
-                // Album art resolution
                 .add("art_resolution", "Album art resolution", PlatformCustomOptionValue::Number {
                     min: 200,
                     max: 1600,
                     step: 100,
                     value: 500
                 })
-                // Max pages to search
                 .add_tooltip("max_pages", "Max pages", "How many pages of search results to scan for tracks", PlatformCustomOptionValue::Number {
                     min: 1,
                     max: 10,
                     step: 1,
                     value: 1
                 })
-                // Ignore version
                 .add_tooltip("ignore_version", "Ignore version when matching", "Ignores (Extended Mix), (Original Mix) and such", PlatformCustomOptionValue::Boolean {
                     value: false
                 })
